@@ -22,6 +22,7 @@
 import re
 import logging
 import os
+import random
 import threading
 import time
 import traceback
@@ -29,10 +30,11 @@ import uuid
 from datetime import datetime
 from StringIO import StringIO
 
-from psycopg2 import OperationalError, ProgrammingError
+from psycopg2 import OperationalError, ProgrammingError, errorcodes
 
 import openerp
-from openerp.osv.osv import PG_CONCURRENCY_ERRORS_TO_RETRY
+from openerp.osv.osv import PG_CONCURRENCY_ERRORS_TO_RETRY,\
+    MAX_TRIES_ON_CONCURRENCY_FAILURE
 from openerp.tools import config
 from openerp.tools.translate import _
 from .queue import JobsQueue
@@ -56,6 +58,29 @@ WORKER_TIMEOUT = 5 * 60  # seconds
 PG_RETRY = 5  # seconds
 
 
+def pg_retry_wrapper(f):
+    def pg_retry(*args, **kwargs):
+        tries = 0
+        while True:
+            try:
+                return f(*args, **kwargs)
+            except OperationalError as err:
+                if err.pgcode not in PG_CONCURRENCY_ERRORS_TO_RETRY:
+                    raise
+                if tries >= MAX_TRIES_ON_CONCURRENCY_FAILURE:
+                    _logger.warning(
+                        "%s, maximum number of tries reached" %
+                        errorcodes.lookup(err.pgcode))
+                    raise
+                wait_time = random.uniform(0.0, 2 ** tries)
+                tries += 1
+                _logger.info("%s, retry %d/%d in %.04f sec..." % (
+                    errorcodes.lookup(err.pgcode), tries,
+                    MAX_TRIES_ON_CONCURRENCY_FAILURE, wait_time))
+                time.sleep(wait_time)
+    return pg_retry
+
+
 class Worker(threading.Thread):
     """ Post and retrieve jobs from the queue, execute them"""
 
@@ -72,12 +97,24 @@ class Worker(threading.Thread):
 
     def run_job(self, job):
         """ Execute a job """
+        @pg_retry_wrapper
         def retry_postpone(job, message, seconds=None):
             with session_hdl.session() as session:
                 job.postpone(result=message, seconds=seconds)
                 job.set_enqueued(self)
                 self.job_storage_class(session).store(job)
             self.queue.enqueue(job)
+
+        @pg_retry_wrapper
+        def set_job_done(job, result=None):
+            with session_hdl.session() as session:
+                job.set_done(result=result)
+                self.job_storage_class(session).store(job)
+
+        @pg_retry_wrapper
+        def store_job(job):
+            with session_hdl.session() as session:
+                self.job_storage_class(session).store(job)
 
         session_hdl = ConnectorSessionHandler(self.db_name,
                                               openerp.SUPERUSER_ID)
@@ -126,18 +163,16 @@ class Worker(threading.Thread):
                 job.perform(session)
             _logger.debug('%s done', job)
 
-            with session_hdl.session() as session:
-                job.set_done()
-                self.job_storage_class(session).store(job)
+            set_job_done(job)
 
         except NothingToDoJob as err:
             if unicode(err):
                 msg = unicode(err)
             else:
                 msg = None
+            _logger.debug('Job %s has nothing to do', job)
             job.cancel(msg)
-            with session_hdl.session() as session:
-                self.job_storage_class(session).store(job)
+            store_job(job)
 
         except RetryableJobError as err:
             # delay the job later, requeue
@@ -163,9 +198,7 @@ class Worker(threading.Thread):
                 _logger.debug(
                     "Setting job to 'done' despite an unspecified error."
                 )
-            with session_hdl.session() as session:
-                job.set_done(result=msg)
-                self.job_storage_class(session).store(job)
+            set_job_done(job, result=msg)
 
         except ReportingException as err:
             if unicode(err):
@@ -173,9 +206,7 @@ class Worker(threading.Thread):
             else:
                 msg = None
             result = msg if msg is not None else _('Nothing to do.')
-            with session_hdl.session() as session:
-                job.set_done(result=result)
-                self.job_storage_class(session).store(job)
+            set_job_done(job, result=result)
 
         except (FailedJobError, Exception):
             buff = StringIO()
@@ -187,8 +218,7 @@ class Worker(threading.Thread):
             except RetryableJobError as err:
                 retry_postpone(job, unicode(err), seconds=14400)
                 _logger.debug('Failed job %s postponed', job)
-            with session_hdl.session() as session:
-                self.job_storage_class(session).store(job)
+            store_job(job)
             raise
 
     def _load_job(self, session, job_uuid):
