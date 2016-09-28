@@ -182,7 +182,11 @@ class Worker(threading.Thread):
             traceback.print_exc(file=buff)
             _logger.error(buff.getvalue())
 
-            job.set_failed(exc_info=buff.getvalue())
+            try:
+                job.set_failed(exc_info=buff.getvalue())
+            except RetryableJobError as err:
+                retry_postpone(job, unicode(err), seconds=14400)
+                _logger.debug('Failed job %s postponed', job)
             with session_hdl.session() as session:
                 self.job_storage_class(session).store(job)
             raise
