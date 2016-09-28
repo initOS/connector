@@ -79,3 +79,7 @@ class ManyIDSInBackend(JobError):
 
 class ChannelNotFound(ConnectorException):
     """ A channel could not be found """
+
+
+class CleanJobError(JobError):
+    """ The job is set to done in spite of an error. """

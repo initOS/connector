@@ -43,6 +43,7 @@ from ..exception import (NoSuchJobError,
                          NotReadableJobError,
                          RetryableJobError,
                          FailedJobError,
+                         CleanJobError,
                          NothingToDoJob)
 
 _logger = logging.getLogger(__name__)
@@ -147,6 +148,22 @@ class Worker(threading.Thread):
                 raise
             retry_postpone(job, unicode(err), seconds=PG_RETRY)
             _logger.debug('%s OperationalError, postponed', job)
+
+        except CleanJobError as err:
+            if unicode(err):
+                msg = unicode(err)
+                _logger.debug(
+                    "Setting job to 'done' despite error: %s"
+                    % msg
+                )
+            else:
+                msg = None
+                _logger.debug(
+                    "Setting job to 'done' despite an unspecified error."
+                )
+            with session_hdl.session() as session:
+                job.set_done(result=msg)
+                self.job_storage_class(session).store(job)
 
         except (FailedJobError, Exception):
             buff = StringIO()
