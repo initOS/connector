@@ -34,6 +34,7 @@ from psycopg2 import OperationalError, ProgrammingError
 import openerp
 from openerp.osv.osv import PG_CONCURRENCY_ERRORS_TO_RETRY
 from openerp.tools import config
+from openerp.tools.translate import _
 from .queue import JobsQueue
 from ..session import ConnectorSessionHandler
 from .job import (OpenERPJobStorage,
@@ -44,6 +45,7 @@ from ..exception import (NoSuchJobError,
                          RetryableJobError,
                          FailedJobError,
                          CleanJobError,
+                         ReportingException,
                          NothingToDoJob)
 
 _logger = logging.getLogger(__name__)
@@ -163,6 +165,16 @@ class Worker(threading.Thread):
                 )
             with session_hdl.session() as session:
                 job.set_done(result=msg)
+                self.job_storage_class(session).store(job)
+
+        except ReportingException as err:
+            if unicode(err):
+                msg = unicode(err)
+            else:
+                msg = None
+            result = msg if msg is not None else _('Nothing to do.')
+            with session_hdl.session() as session:
+                job.set_done(result=result)
                 self.job_storage_class(session).store(job)
 
         except (FailedJobError, Exception):

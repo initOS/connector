@@ -83,3 +83,7 @@ class ChannelNotFound(ConnectorException):
 
 class CleanJobError(JobError):
     """ The job is set to done in spite of an error. """
+
+
+class ReportingException(JobError):
+    """ The job has nothing to do, but don't cancel it. """
