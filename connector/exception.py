@@ -77,5 +77,13 @@ class ManyIDSInBackend(JobError):
     """Unique key exists many times in backend"""
 
 
+class ReportingException(JobError):
+    """ The Job has nothing to do, but keep the status active=True """
+
+
 class ChannelNotFound(ConnectorException):
     """ A channel could not be found """
+
+
+class CleanJobError(JobError):
+    """The job is set to done in spite of the err"""
